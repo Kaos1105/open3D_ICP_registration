@@ -147,14 +147,10 @@ if __name__ == "__main__":
 
     # 点群データ全体の読み込み
     print("Read data start time: ", datetime.now().strftime("%H:%M:%S"))
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_all_point = [executor.submit(read_point_cloud_data, cloud_data) for cloud_data in
-                            [left_data, right_data, target_data]]
+    left_all = o3d.io.read_point_cloud(left_data)
+    right_all = o3d.io.read_point_cloud(right_data)
+    target_all = o3d.io.read_point_cloud(target_data)
     print("Read data end time: ", datetime.now().strftime("%H:%M:%S"))
-
-    left_all = future_all_point[0].result()
-    right_all = future_all_point[1].result()
-    target_all = future_all_point[2].result()
 
     # ターゲットデータの調整
     # 3BF4TH_20210108001_ZANSEN5_H.pcd の出銑孔をy軸が通るように調整する。
@@ -174,28 +170,15 @@ if __name__ == "__main__":
 
     # voxel_sizeにダウンサンプリング
     print("Preprocess start at: ", datetime.now().strftime("%H:%M:%S"))
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_preprocess_align_point = [executor.submit(preprocess_point_cloud, all_point, voxel_size) for all_point in
-                                         [left_above, right_above, target_above]]
+    target_above_down, target_above_fpfh = preprocess_point_cloud(target_above, voxel_size)
+    left_above_down, left_above_fpfh = preprocess_point_cloud(left_above, voxel_size)
+    right_above_down, right_above_fpfh = preprocess_point_cloud(right_above, voxel_size)
     print("Preprocess end at: ", datetime.now().strftime("%H:%M:%S"))
-
-    left_above_down, left_above_fpfh = future_preprocess_align_point[0].result()
-    right_above_down, right_above_fpfh = future_preprocess_align_point[1].result()
-    target_above_down, target_above_fpfh = future_preprocess_align_point[2].result()
 
     # 左右データをターゲットに合わせる変換行列取得
     print("Registration start at: ", datetime.now().strftime("%H:%M:%S"))
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_registration_mat = [
-            executor.submit(registration, left_above_down,
-                            target_above_down, left_above_fpfh,
-                            target_above_fpfh, voxel_size),
-            executor.submit(registration, right_above_down,
-                            target_above_down, right_above_fpfh,
-                            target_above_fpfh, voxel_size),
-        ]
-    mat_L = future_registration_mat[0].result()
-    mat_R = future_registration_mat[1].result()
+    mat_L = registration(left_above_down, target_above_down, left_above_fpfh, target_above_fpfh, voxel_size)
+    mat_R = registration(right_above_down, target_above_down, right_above_fpfh, target_above_fpfh, voxel_size)
     print("Registration end at: ", datetime.now().strftime("%H:%M:%S"))
 
     # 左右データをターゲットに合わせる
