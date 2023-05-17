@@ -164,6 +164,7 @@ if __name__ == "__main__":
     left_all.transform(mat_L)
     right_all.transform(mat_R)
 
+
     # 左データの右半分取得
     left_crop = o3d.geometry.PointCloud.crop(left_all, aabb_right)
 

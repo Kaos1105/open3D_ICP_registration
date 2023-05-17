@@ -4,10 +4,7 @@
 #
 # 2021-01-12 hshimada@ice.ous.ac.jp
 import concurrent
-import contextvars
-import functools
 from datetime import datetime
-import multiprocessing as mp
 import open3d as o3d
 import numpy as np
 import copy
@@ -15,23 +12,30 @@ import sys
 import asyncio
 
 
+def post_process(point_all, aabb_crop, align_mat, voxel_size):
+    # transform with alignment matrix and crop point
+    point_all.transform(align_mat)
+    point_crop = o3d.geometry.PointCloud.crop(point_all, aabb_crop)
+
+    # ダウンサンプリングしたものを表示
+    # 不要ならコメントアウトを。
+    point_down = point_crop.voxel_down_sample(voxel_size)
+
+    return point_down
+
+
 # 結果表示用のヘルパー関数
 def draw_unify_result(left, right):
     left_temp = copy.deepcopy(left)
     right_temp = copy.deepcopy(right)
     left_temp.paint_uniform_color([1, 0.706, 0])
-    # left_temp.paint_uniform_color([0, 0.651, 0.929])
     right_temp.paint_uniform_color([0, 0.651, 0.929])
     o3d.visualization.draw_geometries([left_temp, right_temp])
 
 
-def read_point_cloud_data(data):
-    result = o3d.io.read_point_cloud(data)
-    return result
-
-
 # 点群データの前処理
 def preprocess_point_cloud(pcd, voxel_size):
+
     # voxel_sizeにダウンサンプリング
     pcd_down = pcd.voxel_down_sample(voxel_size)
 
@@ -53,7 +57,7 @@ def preprocess_point_cloud(pcd, voxel_size):
 # RANSAC
 def execute_global_registration(source_down, target_down, source_fpfh,
                                 target_fpfh, voxel_size):
-    distance_threshold = voxel_size * 2
+    distance_threshold = voxel_size * 1.5
     print(":: 大域位置合わせ実行")
     print("   距離しきい値%.3f" % distance_threshold)
     result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
@@ -65,7 +69,7 @@ def execute_global_registration(source_down, target_down, source_fpfh,
                 0.9),
             o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(
                 distance_threshold)
-        ], o3d.pipelines.registration.RANSACConvergenceCriteria(10000, 0.9))
+        ], o3d.pipelines.registration.RANSACConvergenceCriteria(100000, 0.999))
     return result
 
 
@@ -82,19 +86,13 @@ def refine_registration(source, target, source_fpfh, target_fpfh, voxel_size, tr
     )
     return result
 
-
 # 位置合わせ
 def registration(source, target, source_fpfh, target_fpfh, voxel_size):
     # 大域位置合わせ
-    # result_global = execute_global_registration(source, target,
-    #                                             source_fpfh, target_fpfh,
-    #                                             voxel_size)
-
-    print("Global registration start at: ", datetime.now().strftime("%H:%M:%S"))
+    print("Begin registration: ", datetime.now().strftime("%H:%M:%S"))
     result_global = execute_global_registration(source, target,
                                                 source_fpfh, target_fpfh,
                                                 voxel_size)
-    print("Global registration end at: ", datetime.now().strftime("%H:%M:%S"))
 
     # 大域位置合わせ結果の表示
     # fitness: 領域の重複の尺度 (対応点の数 / ターゲット内の点の数)。高いほどフィットしている。
@@ -102,25 +100,23 @@ def registration(source, target, source_fpfh, target_fpfh, voxel_size):
     print(result_global)
 
     # 精密位置合わせ
-    print("Refine registration start at: ", datetime.now().strftime("%H:%M:%S"))
     result_icp = refine_registration(source, target, source_fpfh, target_fpfh,
                                      voxel_size, result_global.transformation)
-    print("Refine registration end at: ", datetime.now().strftime("%H:%M:%S"))
 
     # 精密位置合わせ結果の表示
     # fitness: 領域の重複の尺度 (対応点の数 / ターゲット内の点の数)。高いほどフィットしている。
     # inlier_rmse: 全対応点のRMSE(Root Mean Square Error)。低いほどフィットしている。
     print(result_icp)
-
+    print("End registration: ", datetime.now().strftime("%H:%M:%S"))
     # 変換行列を返す
     return result_icp.transformation
-
 
 ###########################################################################
 ###########################################################################
 ###########################################################################
 # メイン
 if __name__ == "__main__":
+    print("Process start time: ", datetime.now().strftime("%H:%M:%S"))
     sys.stdin.reconfigure(encoding='utf-8')
     sys.stdout.reconfigure(encoding='utf-8')
 
@@ -132,12 +128,12 @@ if __name__ == "__main__":
     # 出力ファイル名
     output_data = "./Shell.xyz"
 
+
     # ダウンサンプリングのボクセルサイズ(m)
-    # voxel_size = 0.02
     voxel_size = 0.02
 
     # 上部と下部のBounding Box定義
-    aabb_under = o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 0])  # 地下100mから地表まで
+    aabb_under = o3d.geometry.AxisAlignedBoundingBox([-100, -100, -100], [100, 100, 0]) # 地下100mから地表まで
     # aabb_above = o3d.geometry.AxisAlignedBoundingBox([-100, -100, 0], [100, 100, 100]) # 地表から上空100mまで
     aabb_above = o3d.geometry.AxisAlignedBoundingBox([-5, 0, 0], [5, 20, 5])
 
@@ -146,11 +142,9 @@ if __name__ == "__main__":
     aabb_right = o3d.geometry.AxisAlignedBoundingBox([-1, -100, -100], [100, 100, 100])
 
     # 点群データ全体の読み込み
-    print("Read data start time: ", datetime.now().strftime("%H:%M:%S"))
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        future_all_point = [executor.submit(read_point_cloud_data, cloud_data) for cloud_data in
+        future_all_point = [executor.submit(o3d.io.read_point_cloud, cloud_data) for cloud_data in
                             [left_data, right_data, target_data]]
-    print("Read data end time: ", datetime.now().strftime("%H:%M:%S"))
 
     left_all = future_all_point[0].result()
     right_all = future_all_point[1].result()
@@ -173,18 +167,15 @@ if __name__ == "__main__":
     target_above = o3d.geometry.PointCloud.crop(target_all, aabb_above)
 
     # voxel_sizeにダウンサンプリング
-    print("Preprocess start at: ", datetime.now().strftime("%H:%M:%S"))
     with concurrent.futures.ThreadPoolExecutor() as executor:
         future_preprocess_align_point = [executor.submit(preprocess_point_cloud, all_point, voxel_size) for all_point in
                                          [left_above, right_above, target_above]]
-    print("Preprocess end at: ", datetime.now().strftime("%H:%M:%S"))
 
     left_above_down, left_above_fpfh = future_preprocess_align_point[0].result()
     right_above_down, right_above_fpfh = future_preprocess_align_point[1].result()
     target_above_down, target_above_fpfh = future_preprocess_align_point[2].result()
 
     # 左右データをターゲットに合わせる変換行列取得
-    print("Registration start at: ", datetime.now().strftime("%H:%M:%S"))
     with concurrent.futures.ThreadPoolExecutor() as executor:
         future_registration_mat = [
             executor.submit(registration, left_above_down,
@@ -196,24 +187,17 @@ if __name__ == "__main__":
         ]
     mat_L = future_registration_mat[0].result()
     mat_R = future_registration_mat[1].result()
-    print("Registration end at: ", datetime.now().strftime("%H:%M:%S"))
 
     # 左右データをターゲットに合わせる
-    left_all.transform(mat_L)
-    right_all.transform(mat_R)
-
-    # 左データの右半分取得
-    left_crop = o3d.geometry.PointCloud.crop(left_all, aabb_right)
-
-    # 右データの左半分取得
-    right_crop = o3d.geometry.PointCloud.crop(right_all, aabb_left)
-
-    # ダウンサンプリングしたものを表示
-    # 不要ならコメントアウトを。
-    left_crop_down, left_crop_fpfh = preprocess_point_cloud(left_crop, voxel_size)
-    right_crop_down, right_crop_fpfh = preprocess_point_cloud(right_crop, voxel_size)
-
-    # draw_unify_result(left_crop_down, right_crop_down)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future_cropped_down = [
+            executor.submit(post_process, left_all,
+                            aabb_right, mat_L, voxel_size),
+            executor.submit(post_process, right_all,
+                            aabb_left, mat_R, voxel_size),
+        ]
+    left_crop_down = future_cropped_down[0].result()
+    right_crop_down = future_cropped_down[1].result()
 
     # Open3Dの点群をnumpyの配列に変換して結合
 
@@ -234,3 +218,4 @@ if __name__ == "__main__":
         for i, p in enumerate(p_all):
             f.write("%f %f %f %d %d %d\n" % (p[0], p[1], p[2],
                                              int(c[i][0] * 255), int(c[i][1] * 255), int(c[i][2] * 255)))
+    print("Process end time: ", datetime.now().strftime("%H:%M:%S"))
