@@ -19,7 +19,7 @@ def surface_reconstruct(source):
     print('run Poisson surface reconstruction')
 
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-        source, depth=9)
+        source, depth=11, width=0, scale=1.5)
     densities = np.asarray(densities)
 
     print('remove low density vertices')
